@@ -4,15 +4,25 @@ go 1.26.0
 
 require (
 	github.com/grandcat/zeroconf v1.0.0
+<<<<<<< dependabot/go_modules/k8s.io/apimachinery-0.36.2
+	k8s.io/api v0.34.0
+	k8s.io/apimachinery v0.36.2
+	k8s.io/client-go v0.34.0
+=======
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2
+>>>>>>> master
 )
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+<<<<<<< dependabot/go_modules/k8s.io/apimachinery-0.36.2
+	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
+=======
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
+>>>>>>> master
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
@@ -33,7 +43,11 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
+<<<<<<< dependabot/go_modules/k8s.io/apimachinery-0.36.2
+	golang.org/x/oauth2 v0.27.0 // indirect
+=======
 	golang.org/x/oauth2 v0.34.0 // indirect
+>>>>>>> master
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
