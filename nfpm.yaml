@@ -1,0 +1,45 @@
+name: ingress-mdns
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Joseph Harnish <josephharnish@gmail.com>
+description: |
+  Kubernetes Ingress mDNS advertiser.
+  Watches Kubernetes Ingress resources and advertises their .local
+  hostnames as mDNS (Bonjour/zeroconf) A records on the local network.
+vendor: Joseph Harnish
+homepage: https://github.com/Harnish/ingress-mdns
+license: MIT
+
+contents:
+  - src: ./dist/ingress-mdns
+    dst: /usr/bin/ingress-mdns
+
+  - src: ./packaging/ingress-mdns.service
+    dst: /lib/systemd/system/ingress-mdns.service
+
+  - src: ./packaging/ingress-mdns.env
+    dst: /etc/ingress-mdns/ingress-mdns.env
+    type: config|noreplace
+
+  - src: ./packaging/manual.json.example
+    dst: /etc/ingress-mdns/manual.json.example
+
+  - dst: /etc/ingress-mdns
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: ./packaging/postinstall.sh
+  preremove: ./packaging/preremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libc6
+  rpm:
+    depends:
+      - glibc

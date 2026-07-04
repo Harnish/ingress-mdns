@@ -62,7 +62,51 @@ Useful for advertising hosts that aren't Kubernetes Ingresses — a NAS, a print
 
 Manual entries are loaded once at startup and are not reconciled by the watch loop. Restart the daemon to pick up changes.
 
-## Running as a systemd service
+## Install (deb / rpm)
+
+Pre-built `.deb` and `.rpm` packages are published on the
+[Releases](https://github.com/Harnish/ingress-mdns/releases) page for `amd64`
+and `arm64`. They install:
+
+- the binary at `/usr/bin/ingress-mdns`
+- a systemd unit at `/lib/systemd/system/ingress-mdns.service`
+- config under `/etc/ingress-mdns/`
+
+```bash
+# Debian / Ubuntu
+sudo dpkg -i ingress-mdns_*_amd64.deb
+
+# RHEL / Fedora
+sudo rpm -i ingress-mdns-*.x86_64.rpm
+```
+
+After installing:
+
+1. Place a kubeconfig at `/etc/ingress-mdns/kubeconfig`.
+2. (Optional) create `/etc/ingress-mdns/manual.json` for non-Ingress hosts.
+3. Adjust arguments in `/etc/ingress-mdns/ingress-mdns.env`.
+4. Enable and start:
+
+```bash
+sudo systemctl enable --now ingress-mdns
+```
+
+### Building packages locally
+
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/ingress-mdns main.go
+ARCH=amd64 VERSION=0.0.1 nfpm package --config nfpm.yaml --packager deb --target dist/
+ARCH=amd64 VERSION=0.0.1 nfpm package --config nfpm.yaml --packager rpm --target dist/
+```
+
+The [`release` workflow](.github/workflows/release.yml) builds both formats for
+`amd64` and `arm64` automatically and attaches them to a GitHub Release when a
+`v*` tag is pushed.
+
+## Running as a systemd service (manual)
+
+The packaged unit lives at [`packaging/ingress-mdns.service`](packaging/ingress-mdns.service).
+It reads arguments from `/etc/ingress-mdns/ingress-mdns.env`:
 
 ```ini
 [Unit]
@@ -71,7 +115,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/ingress-mdns --kubeconfig /etc/ingress-mdns/kubeconfig --manual /etc/ingress-mdns/manual.json
+EnvironmentFile=-/etc/ingress-mdns/ingress-mdns.env
+ExecStart=/usr/bin/ingress-mdns $INGRESS_MDNS_ARGS
 Restart=on-failure
 RestartSec=5
 

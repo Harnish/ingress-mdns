@@ -1,0 +1,30 @@
+[Unit]
+Description=Kubernetes Ingress mDNS advertiser
+Documentation=https://github.com/Harnish/ingress-mdns
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/ingress-mdns/ingress-mdns.env
+ExecStart=/usr/bin/ingress-mdns $INGRESS_MDNS_ARGS
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+DynamicUser=false
+User=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/etc/ingress-mdns
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
