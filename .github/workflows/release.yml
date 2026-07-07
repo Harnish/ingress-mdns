@@ -19,6 +19,8 @@ jobs:
     strategy:
       matrix:
         arch: [amd64, arm64]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -74,3 +76,36 @@ jobs:
           files: |
             dist/*.deb
             dist/*.rpm
+
+  build-windows:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build exe
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/ingress-mdns.exe main.go
+          cd dist && zip "ingress-mdns_${VERSION}_windows_amd64.zip" ingress-mdns.exe
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingress-mdns-windows-amd64
+          path: dist/*.zip
+
+      - name: Attach to release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
