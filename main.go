@@ -165,7 +165,7 @@ func main() {
 		registry.update("manual", manualServices)
 	}
 
-	go watchIngresses(ctx, clientset, registry)
+	go watchIngresses(ctx, clientset, registry, "default")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -179,7 +179,7 @@ func main() {
 
 // watchIngresses lists all ingresses, publishes their mDNS entries, then
 // watches for changes. On disconnect it re-lists to catch any missed events.
-func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, registry *ServiceRegistry) {
+func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, registry *ServiceRegistry, clusterLabel string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -187,7 +187,7 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 
 		list, err := clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
 		if err != nil {
-			log.Printf("failed to list ingresses: %v; retrying in 5s", err)
+			log.Printf("[%s] failed to list ingresses: %v; retrying in 5s", clusterLabel, err)
 			select {
 			case <-ctx.Done():
 				return
@@ -198,16 +198,16 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 
 		for i := range list.Items {
 			ingress := &list.Items[i]
-			registry.update(ingressKey(ingress), processIngress(ingress))
+			registry.update(ingressKey(clusterLabel, ingress), processIngress(ingress))
 		}
 
-		log.Printf("Watching ingresses (resourceVersion %s)", list.ResourceVersion)
+		log.Printf("[%s] Watching ingresses (resourceVersion %s)", clusterLabel, list.ResourceVersion)
 
 		watcher, err := clientset.NetworkingV1().Ingresses("").Watch(ctx, metav1.ListOptions{
 			ResourceVersion: list.ResourceVersion,
 		})
 		if err != nil {
-			log.Printf("failed to start watch: %v; retrying in 5s", err)
+			log.Printf("[%s] failed to start watch: %v; retrying in 5s", clusterLabel, err)
 			select {
 			case <-ctx.Done():
 				return
@@ -216,14 +216,14 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 			}
 		}
 
-		ctxDone := drainWatchEvents(ctx, watcher.ResultChan(), registry)
+		ctxDone := drainWatchEvents(ctx, watcher.ResultChan(), registry, clusterLabel)
 		watcher.Stop()
 
 		if ctxDone {
 			return
 		}
 
-		log.Println("Watch ended, re-listing...")
+		log.Printf("[%s] Watch ended, re-listing...", clusterLabel)
 		select {
 		case <-ctx.Done():
 			return
@@ -234,7 +234,7 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 
 // drainWatchEvents processes events until the channel closes or ctx is done.
 // Returns true if ctx was cancelled, false if the watch channel closed.
-func drainWatchEvents(ctx context.Context, ch <-chan watch.Event, registry *ServiceRegistry) bool {
+func drainWatchEvents(ctx context.Context, ch <-chan watch.Event, registry *ServiceRegistry, clusterLabel string) bool {
 	for {
 		select {
 		case <-ctx.Done():
@@ -244,27 +244,27 @@ func drainWatchEvents(ctx context.Context, ch <-chan watch.Event, registry *Serv
 				return false
 			}
 			if event.Type == watch.Error {
-				log.Printf("Watch error event: %v", event.Object)
+				log.Printf("[%s] Watch error event: %v", clusterLabel, event.Object)
 				return false
 			}
 			ingress, ok := event.Object.(*networkingv1.Ingress)
 			if !ok {
 				continue
 			}
-			key := ingressKey(ingress)
+			key := ingressKey(clusterLabel, ingress)
 			switch event.Type {
 			case watch.Added, watch.Modified:
 				registry.update(key, processIngress(ingress))
 			case watch.Deleted:
-				log.Printf("Ingress deleted: %s", key)
+				log.Printf("[%s] Ingress deleted: %s", clusterLabel, key)
 				registry.remove(key)
 			}
 		}
 	}
 }
 
-func ingressKey(ingress *networkingv1.Ingress) string {
-	return ingress.Namespace + "/" + ingress.Name
+func ingressKey(clusterLabel string, ingress *networkingv1.Ingress) string {
+	return clusterLabel + "/" + ingress.Namespace + "/" + ingress.Name
 }
 
 func processIngress(ingress *networkingv1.Ingress) []PublishedService {
