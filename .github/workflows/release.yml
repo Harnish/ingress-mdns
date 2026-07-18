@@ -45,7 +45,7 @@ jobs:
         run: |
           mkdir -p dist
           go build -trimpath -ldflags "-s -w" \
-            -o dist/ingress-mdns main.go
+            -o dist/ingress-mdns .
 
       - name: Install nfpm
         run: |
@@ -95,7 +95,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w" -o dist/ingress-mdns.exe main.go
+          go build -trimpath -ldflags "-s -w" -o dist/ingress-mdns.exe .
           cd dist && zip "ingress-mdns_${VERSION}_windows_amd64.zip" ingress-mdns.exe
 
       - name: Upload build artifact
