@@ -100,6 +100,23 @@ func (r *ServiceRegistry) remove(key string) {
 	delete(r.services, key)
 }
 
+func (r *ServiceRegistry) removeCluster(label string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prefix := label + "/"
+	for key, svcs := range r.services {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		for _, svc := range svcs {
+			if svc.Server != nil {
+				svc.Server.Shutdown()
+			}
+		}
+		delete(r.services, key)
+	}
+}
+
 func (r *ServiceRegistry) shutdownAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
