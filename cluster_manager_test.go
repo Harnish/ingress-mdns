@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const testKubeconfig = `apiVersion: v1
@@ -124,5 +125,27 @@ func TestClusterLabel(t *testing.T) {
 	want := "prod"
 	if got != want {
 		t.Fatalf("clusterLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestClusterManagerRunReturnsWhenContextCancelled(t *testing.T) {
+	dir := t.TempDir()
+	registry := newServiceRegistry()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before run() starts
+
+	m := newClusterManager(dir, registry)
+
+	done := make(chan struct{})
+	go func() {
+		m.run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected run() to return promptly when ctx is already cancelled")
 	}
 }

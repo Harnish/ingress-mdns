@@ -6,28 +6,47 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+const clusterPollInterval = 10 * time.Second
 
 // clusterManager watches a directory of kubeconfig files and starts/stops
 // one watchIngresses goroutine per file found. It is single-goroutine: all
 // methods are called from run() (added in a later task), so no locking is
 // needed on its maps.
 type clusterManager struct {
-	dir        string
-	registry   *ServiceRegistry
-	running    map[string]context.CancelFunc
-	lastFailed map[string]bool
+	dir          string
+	registry     *ServiceRegistry
+	pollInterval time.Duration
+	running      map[string]context.CancelFunc
+	lastFailed   map[string]bool
 }
 
 func newClusterManager(dir string, registry *ServiceRegistry) *clusterManager {
 	return &clusterManager{
-		dir:        dir,
-		registry:   registry,
-		running:    make(map[string]context.CancelFunc),
-		lastFailed: make(map[string]bool),
+		dir:          dir,
+		registry:     registry,
+		pollInterval: clusterPollInterval,
+		running:      make(map[string]context.CancelFunc),
+		lastFailed:   make(map[string]bool),
+	}
+}
+
+// run polls the directory immediately, then on every pollInterval tick,
+// until ctx is cancelled.
+func (m *clusterManager) run(ctx context.Context) {
+	m.poll(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(m.pollInterval):
+			m.poll(ctx)
+		}
 	}
 }
 
