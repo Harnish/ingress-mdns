@@ -6,7 +6,7 @@ This exists because my home lab runs k3s with most services exposed only interna
 
 ## How it works
 
-1. Connects to the cluster using a kubeconfig file.
+1. Connects to one cluster via `--kubeconfig`, or to several via `--kubeconfig-dir` (one file per cluster).
 2. Lists all Ingress resources cluster-wide and watches for changes.
 3. For each Ingress rule with a `.local` hostname and a load-balancer IP, publishes an mDNS host announcement via `grandcat/zeroconf`.
 4. Reconciles automatically — adding, updating, and removing announcements as Ingresses change.
@@ -34,14 +34,22 @@ go build -o ingress-mdns main.go
 
 # With manual entries for non-Ingress hosts
 ./ingress-mdns --kubeconfig ~/.kube/config --manual ./manual.json
+
+# Multiple clusters — one kubeconfig file per cluster in a directory
+./ingress-mdns --kubeconfig-dir /etc/ingress-mdns/kubeconfigs
 ```
 
 ### Flags
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--kubeconfig` | Yes | Path to kubeconfig file |
+| `--kubeconfig` | One of `--kubeconfig` / `--kubeconfig-dir` | Path to a single kubeconfig file |
+| `--kubeconfig-dir` | One of `--kubeconfig` / `--kubeconfig-dir` | Directory of kubeconfig files, one per cluster |
 | `--manual` | No | Path to JSON file with manual hostname→IP mappings |
+
+`--kubeconfig` and `--kubeconfig-dir` are mutually exclusive — pick one.
+
+With `--kubeconfig-dir`, the directory is polled every 10s: adding a kubeconfig file starts watching that cluster, removing one stops it and tears down its published mDNS entries. The cluster's name (for logs and internal keys) is its filename with the extension stripped, e.g. `prod.yaml` → `prod`. A kubeconfig that fails to parse is logged once and retried on the next poll — it doesn't stop the daemon or the other clusters.
 
 ### Manual entries file
 
