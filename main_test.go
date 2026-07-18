@@ -37,3 +37,26 @@ func TestIngressKeyIncludesClusterLabel(t *testing.T) {
 		t.Fatalf("ingressKey() = %q, want %q", got, want)
 	}
 }
+
+func TestValidateKubeconfigFlags(t *testing.T) {
+	tests := []struct {
+		name          string
+		kubeconfig    string
+		kubeconfigDir string
+		wantErr       bool
+	}{
+		{name: "both empty", kubeconfig: "", kubeconfigDir: "", wantErr: true},
+		{name: "both set", kubeconfig: "a", kubeconfigDir: "b", wantErr: true},
+		{name: "kubeconfig only", kubeconfig: "a", kubeconfigDir: "", wantErr: false},
+		{name: "dir only", kubeconfig: "", kubeconfigDir: "b", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateKubeconfigFlags(tt.kubeconfig, tt.kubeconfigDir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateKubeconfigFlags(%q, %q) error = %v, wantErr %v", tt.kubeconfig, tt.kubeconfigDir, err, tt.wantErr)
+			}
+		})
+	}
+}

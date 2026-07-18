@@ -8,6 +8,11 @@
 //     --kubeconfig ~/.kube/config \
 //     --manual ./manual.json
 //
+// Or, for multiple clusters:
+//   ./ingress-mdns \
+//     --kubeconfig-dir /etc/ingress-mdns/kubeconfigs \
+//     --manual ./manual.json
+//
 // Example manual.json:
 // [
 //   {
@@ -130,26 +135,28 @@ func (r *ServiceRegistry) shutdownAll() {
 	}
 }
 
+func validateKubeconfigFlags(kubeconfig, kubeconfigDir string) error {
+	if kubeconfig == "" && kubeconfigDir == "" {
+		return fmt.Errorf("either --kubeconfig or --kubeconfig-dir is required")
+	}
+	if kubeconfig != "" && kubeconfigDir != "" {
+		return fmt.Errorf("--kubeconfig and --kubeconfig-dir are mutually exclusive")
+	}
+	return nil
+}
+
 func main() {
 	var kubeconfig string
+	var kubeconfigDir string
 	var manualFile string
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig")
+	flag.StringVar(&kubeconfigDir, "kubeconfig-dir", "", "Path to directory of kubeconfig files, one per cluster (mutually exclusive with --kubeconfig)")
 	flag.StringVar(&manualFile, "manual", "", "Path to manual JSON file")
 	flag.Parse()
 
-	if kubeconfig == "" {
-		log.Fatal("--kubeconfig is required")
-	}
-
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		log.Fatalf("failed to load kubeconfig: %v", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		log.Fatalf("failed to create k8s client: %v", err)
+	if err := validateKubeconfigFlags(kubeconfig, kubeconfigDir); err != nil {
+		log.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -165,7 +172,27 @@ func main() {
 		registry.update("manual", manualServices)
 	}
 
-	go watchIngresses(ctx, clientset, registry, "default")
+	if kubeconfigDir != "" {
+		info, err := os.Stat(kubeconfigDir)
+		if err != nil || !info.IsDir() {
+			log.Fatalf("--kubeconfig-dir %s is not a readable directory", kubeconfigDir)
+		}
+
+		manager := newClusterManager(kubeconfigDir, registry)
+		go manager.run(ctx)
+	} else {
+		config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			log.Fatalf("failed to load kubeconfig: %v", err)
+		}
+
+		clientset, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			log.Fatalf("failed to create k8s client: %v", err)
+		}
+
+		go watchIngresses(ctx, clientset, registry, "default")
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
