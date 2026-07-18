@@ -16,8 +16,7 @@ const clusterPollInterval = 10 * time.Second
 
 // clusterManager watches a directory of kubeconfig files and starts/stops
 // one watchIngresses goroutine per file found. It is single-goroutine: all
-// methods are called from run() (added in a later task), so no locking is
-// needed on its maps.
+// methods are called from run(), so no locking is needed on its maps.
 type clusterManager struct {
 	dir          string
 	registry     *ServiceRegistry
@@ -86,7 +85,6 @@ func (m *clusterManager) poll(ctx context.Context) {
 		delete(m.lastFailed, path)
 
 		label := clusterLabel(path)
-		m.registry.removeCluster(label)
 		log.Printf("kubeconfig removed, stopped watching cluster %s (%s)", label, path)
 	}
 
@@ -110,7 +108,10 @@ func (m *clusterManager) startCluster(ctx context.Context, path string) {
 			delete(m.lastFailed, path)
 
 			log.Printf("watching new cluster %s (%s)", label, path)
-			go watchIngresses(clusterCtx, clientset, m.registry, label)
+			go func() {
+				watchIngresses(clusterCtx, clientset, m.registry, label)
+				m.registry.removeCluster(label)
+			}()
 			return
 		}
 	}
