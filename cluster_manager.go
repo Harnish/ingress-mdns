@@ -70,6 +70,13 @@ func (m *clusterManager) poll(ctx context.Context) {
 		m.registry.removeCluster(label)
 		log.Printf("kubeconfig removed, stopped watching cluster %s (%s)", label, path)
 	}
+
+	for path := range m.lastFailed {
+		if seen[path] {
+			continue
+		}
+		delete(m.lastFailed, path)
+	}
 }
 
 func (m *clusterManager) startCluster(ctx context.Context, path string) {

@@ -94,6 +94,31 @@ func TestClusterManagerPollSkipsInvalidKubeconfig(t *testing.T) {
 	}
 }
 
+func TestClusterManagerPollClearsLastFailedOnRemoval(t *testing.T) {
+	dir := t.TempDir()
+	badPath := writeTestFile(t, dir, "bad.yaml", "not: [valid kubeconfig")
+
+	registry := newServiceRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := newClusterManager(dir, registry)
+	m.poll(ctx)
+
+	if !m.lastFailed[badPath] {
+		t.Fatal("expected invalid kubeconfig to be tracked as failed")
+	}
+
+	if err := os.Remove(badPath); err != nil {
+		t.Fatalf("failed to remove %s: %v", badPath, err)
+	}
+	m.poll(ctx)
+
+	if m.lastFailed[badPath] {
+		t.Fatalf("expected %s to be cleared from lastFailed after removal", badPath)
+	}
+}
+
 func TestClusterLabel(t *testing.T) {
 	got := clusterLabel("/etc/kubeconfigs/prod.yaml")
 	want := "prod"
