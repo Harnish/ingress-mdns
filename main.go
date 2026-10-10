@@ -68,6 +68,7 @@ type ManualEntry struct {
 
 type entry struct {
 	sig     string // desired-state signature; "" forces republish next update
+	hosts   []string
 	servers []*zeroconf.Server
 }
 
@@ -102,12 +103,47 @@ func (e *entry) shutdown() {
 	}
 }
 
+// owner returns the key (other than except) that already publishes host, or "".
+// ponytail: linear scan, add a host->key index if registries get large.
+func (r *ServiceRegistry) owner(host, except string) string {
+	for k, e := range r.services {
+		if k == except {
+			continue
+		}
+		for _, h := range e.hosts {
+			if h == host {
+				return k
+			}
+		}
+	}
+	return ""
+}
+
+// claimable drops hosts already published by another key (first claim wins;
+// manual entries load first so they always win). dropped reports whether any
+// host was refused.
+func (r *ServiceRegistry) claimable(key string, desired map[string][]string) (map[string][]string, bool) {
+	out := make(map[string][]string, len(desired))
+	dropped := false
+	for host, ips := range desired {
+		if o := r.owner(host, key); o != "" {
+			log.Printf("Refusing %s for %s: already published by %s", host, key, o)
+			dropped = true
+			continue
+		}
+		out[host] = ips
+	}
+	return out, dropped
+}
+
 // update makes the published servers for key match desired (hostname -> IPs).
 // It is a no-op when nothing changed, so re-lists don't send mDNS goodbyes.
+// Hostnames already published by a different key are refused.
 func (r *ServiceRegistry) update(key string, desired map[string][]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	desired, dropped := r.claimable(key, desired)
 	sig := signature(desired)
 	if old, ok := r.services[key]; ok {
 		if old.sig == sig {
@@ -121,6 +157,9 @@ func (r *ServiceRegistry) update(key string, desired map[string][]string) {
 	}
 
 	e := &entry{sig: sig}
+	if dropped {
+		e.sig = "" // retry once the other owner goes away
+	}
 	for host, ips := range desired {
 		srv, err := publishMDNS(host, ips)
 		if err != nil {
@@ -129,6 +168,7 @@ func (r *ServiceRegistry) update(key string, desired map[string][]string) {
 			continue
 		}
 		e.servers = append(e.servers, srv)
+		e.hosts = append(e.hosts, host)
 	}
 	r.services[key] = e
 }

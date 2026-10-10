@@ -60,3 +60,25 @@ func TestValidateKubeconfigFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestClaimableFirstClaimWins(t *testing.T) {
+	r := newServiceRegistry()
+	r.services["manual"] = &entry{hosts: []string{"printer.local"}}
+	r.services["prod/default/a"] = &entry{hosts: []string{"app.local"}}
+
+	desired := map[string][]string{
+		"printer.local": {"1.1.1.1"}, // taken by manual
+		"app.local":     {"2.2.2.2"}, // taken by prod/default/a
+		"new.local":     {"3.3.3.3"},
+	}
+	got, dropped := r.claimable("staging/default/b", desired)
+	if !dropped || len(got) != 1 || got["new.local"] == nil {
+		t.Fatalf("claimable() = %v, dropped=%v; want only new.local", got, dropped)
+	}
+
+	// the owner may keep re-claiming its own host
+	got, dropped = r.claimable("prod/default/a", map[string][]string{"app.local": {"2.2.2.2"}})
+	if dropped || len(got) != 1 {
+		t.Fatalf("owner re-claim = %v, dropped=%v; want kept", got, dropped)
+	}
+}
