@@ -9,8 +9,8 @@ import (
 
 func TestServiceRegistryRemoveCluster(t *testing.T) {
 	registry := newServiceRegistry()
-	registry.services["prod/default/app"] = []PublishedService{{Name: "app.local"}}
-	registry.services["staging/default/app"] = []PublishedService{{Name: "app.local"}}
+	registry.services["prod/default/app"] = &entry{}
+	registry.services["staging/default/app"] = &entry{}
 
 	registry.removeCluster("prod")
 

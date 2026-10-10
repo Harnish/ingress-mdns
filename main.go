@@ -33,7 +33,7 @@
 // Notes:
 //   - mDNS normally resolves *.local names
 //   - Most OSes will ignore arbitrary non-.local names over mDNS
-//   - If ingress has no LB IP, it is skipped
+//   - If ingress has no LB IP, it is skipped unless --ingress-ip is set
 //   - This publishes A records as mDNS host announcements
 
 package main
@@ -47,6 +47,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -65,72 +66,113 @@ type ManualEntry struct {
 	IP       string `json:"ip"`
 }
 
-type PublishedService struct {
-	Server *zeroconf.Server
-	Name   string
+type entry struct {
+	sig     string // desired-state signature; "" forces republish next update
+	servers []*zeroconf.Server
 }
 
 type ServiceRegistry struct {
 	mu       sync.Mutex
-	services map[string][]PublishedService
+	services map[string]*entry
 }
 
 func newServiceRegistry() *ServiceRegistry {
-	return &ServiceRegistry{services: make(map[string][]PublishedService)}
+	return &ServiceRegistry{services: make(map[string]*entry)}
 }
 
-func (r *ServiceRegistry) update(key string, svcs []PublishedService) {
+// signature returns a stable string for a hostname -> IPs mapping.
+func signature(desired map[string][]string) string {
+	hosts := make([]string, 0, len(desired))
+	for h := range desired {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	var sb strings.Builder
+	for _, h := range hosts {
+		ips := append([]string(nil), desired[h]...)
+		sort.Strings(ips)
+		sb.WriteString(h + "=" + strings.Join(ips, ",") + ";")
+	}
+	return sb.String()
+}
+
+func (e *entry) shutdown() {
+	for _, srv := range e.servers {
+		srv.Shutdown()
+	}
+}
+
+// update makes the published servers for key match desired (hostname -> IPs).
+// It is a no-op when nothing changed, so re-lists don't send mDNS goodbyes.
+func (r *ServiceRegistry) update(key string, desired map[string][]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, svc := range r.services[key] {
-		if svc.Server != nil {
-			svc.Server.Shutdown()
+
+	sig := signature(desired)
+	if old, ok := r.services[key]; ok {
+		if old.sig == sig {
+			return
 		}
-	}
-	if len(svcs) > 0 {
-		r.services[key] = svcs
-	} else {
+		old.shutdown()
 		delete(r.services, key)
 	}
+	if len(desired) == 0 {
+		return
+	}
+
+	e := &entry{sig: sig}
+	for host, ips := range desired {
+		srv, err := publishMDNS(host, ips)
+		if err != nil {
+			log.Printf("Failed to publish %s -> %v: %v", host, ips, err)
+			e.sig = "" // retry on next update
+			continue
+		}
+		e.servers = append(e.servers, srv)
+	}
+	r.services[key] = e
 }
 
 func (r *ServiceRegistry) remove(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, svc := range r.services[key] {
-		if svc.Server != nil {
-			svc.Server.Shutdown()
+	if e, ok := r.services[key]; ok {
+		e.shutdown()
+		delete(r.services, key)
+	}
+}
+
+// prune removes every key under the cluster label not in keep.
+func (r *ServiceRegistry) prune(label string, keep map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prefix := label + "/"
+	for key, e := range r.services {
+		if strings.HasPrefix(key, prefix) && !keep[key] {
+			log.Printf("Pruning stale ingress: %s", key)
+			e.shutdown()
+			delete(r.services, key)
 		}
 	}
-	delete(r.services, key)
 }
 
 func (r *ServiceRegistry) removeCluster(label string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	prefix := label + "/"
-	for key, svcs := range r.services {
-		if !strings.HasPrefix(key, prefix) {
-			continue
+	for key, e := range r.services {
+		if strings.HasPrefix(key, prefix) {
+			e.shutdown()
+			delete(r.services, key)
 		}
-		for _, svc := range svcs {
-			if svc.Server != nil {
-				svc.Server.Shutdown()
-			}
-		}
-		delete(r.services, key)
 	}
 }
 
 func (r *ServiceRegistry) shutdownAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for key, svcs := range r.services {
-		for _, svc := range svcs {
-			if svc.Server != nil {
-				svc.Server.Shutdown()
-			}
-		}
+	for key, e := range r.services {
+		e.shutdown()
 		delete(r.services, key)
 	}
 }
@@ -149,10 +191,12 @@ func main() {
 	var kubeconfig string
 	var kubeconfigDir string
 	var manualFile string
+	var ingressIP string
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig")
 	flag.StringVar(&kubeconfigDir, "kubeconfig-dir", "", "Path to directory of kubeconfig files, one per cluster (mutually exclusive with --kubeconfig)")
 	flag.StringVar(&manualFile, "manual", "", "Path to manual JSON file")
+	flag.StringVar(&ingressIP, "ingress-ip", "", "Fallback IP for ingresses with no load-balancer IP")
 	flag.Parse()
 
 	if err := validateKubeconfigFlags(kubeconfig, kubeconfigDir); err != nil {
@@ -165,11 +209,11 @@ func main() {
 	registry := newServiceRegistry()
 
 	if manualFile != "" {
-		manualServices, err := processManualFile(manualFile)
+		manual, err := processManualFile(manualFile)
 		if err != nil {
 			log.Fatalf("failed to process manual file: %v", err)
 		}
-		registry.update("manual", manualServices)
+		registry.update("manual", manual)
 	}
 
 	if kubeconfigDir != "" {
@@ -179,6 +223,7 @@ func main() {
 		}
 
 		manager := newClusterManager(kubeconfigDir, registry)
+		manager.ingressIP = ingressIP
 		go manager.run(ctx)
 	} else {
 		config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -191,7 +236,7 @@ func main() {
 			log.Fatalf("failed to create k8s client: %v", err)
 		}
 
-		go watchIngresses(ctx, clientset, registry, "default")
+		go watchIngresses(ctx, clientset, registry, "default", ingressIP)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -206,7 +251,7 @@ func main() {
 
 // watchIngresses lists all ingresses, publishes their mDNS entries, then
 // watches for changes. On disconnect it re-lists to catch any missed events.
-func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, registry *ServiceRegistry, clusterLabel string) {
+func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, registry *ServiceRegistry, clusterLabel, ingressIP string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -223,10 +268,14 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 			}
 		}
 
+		keep := make(map[string]bool, len(list.Items))
 		for i := range list.Items {
 			ingress := &list.Items[i]
-			registry.update(ingressKey(clusterLabel, ingress), processIngress(ingress))
+			key := ingressKey(clusterLabel, ingress)
+			keep[key] = true
+			registry.update(key, processIngress(ingress, ingressIP))
 		}
+		registry.prune(clusterLabel, keep)
 
 		log.Printf("[%s] Watching ingresses (resourceVersion %s)", clusterLabel, list.ResourceVersion)
 
@@ -243,7 +292,7 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 			}
 		}
 
-		ctxDone := drainWatchEvents(ctx, watcher.ResultChan(), registry, clusterLabel)
+		ctxDone := drainWatchEvents(ctx, watcher.ResultChan(), registry, clusterLabel, ingressIP)
 		watcher.Stop()
 
 		if ctxDone {
@@ -261,7 +310,7 @@ func watchIngresses(ctx context.Context, clientset *kubernetes.Clientset, regist
 
 // drainWatchEvents processes events until the channel closes or ctx is done.
 // Returns true if ctx was cancelled, false if the watch channel closed.
-func drainWatchEvents(ctx context.Context, ch <-chan watch.Event, registry *ServiceRegistry, clusterLabel string) bool {
+func drainWatchEvents(ctx context.Context, ch <-chan watch.Event, registry *ServiceRegistry, clusterLabel, ingressIP string) bool {
 	for {
 		select {
 		case <-ctx.Done():
@@ -281,7 +330,7 @@ func drainWatchEvents(ctx context.Context, ch <-chan watch.Event, registry *Serv
 			key := ingressKey(clusterLabel, ingress)
 			switch event.Type {
 			case watch.Added, watch.Modified:
-				registry.update(key, processIngress(ingress))
+				registry.update(key, processIngress(ingress, ingressIP))
 			case watch.Deleted:
 				log.Printf("[%s] Ingress deleted: %s", clusterLabel, key)
 				registry.remove(key)
@@ -294,40 +343,26 @@ func ingressKey(clusterLabel string, ingress *networkingv1.Ingress) string {
 	return clusterLabel + "/" + ingress.Namespace + "/" + ingress.Name
 }
 
-func processIngress(ingress *networkingv1.Ingress) []PublishedService {
-	results := make([]PublishedService, 0)
+// processIngress returns the desired hostname -> IPs mapping for an ingress.
+func processIngress(ingress *networkingv1.Ingress, ingressIP string) map[string][]string {
+	results := make(map[string][]string)
 
 	ips := extractIngressIPs(ingress)
 	if len(ips) == 0 {
-		log.Printf(
-			"Skipping ingress %s/%s: no LB IPs",
-			ingress.Namespace,
-			ingress.Name,
-		)
-		return results
+		if ingressIP == "" {
+			log.Printf("Skipping ingress %s/%s: no LB IPs", ingress.Namespace, ingress.Name)
+			return results
+		}
+		log.Printf("Ingress %s/%s has no LB IPs, using --ingress-ip %s", ingress.Namespace, ingress.Name, ingressIP)
+		ips = []string{ingressIP}
 	}
 
 	for _, rule := range ingress.Spec.Rules {
-		if rule.Host == "" || !strings.HasSuffix(rule.Host, ".local") {
+		hostname := strings.TrimSpace(strings.ToLower(rule.Host))
+		if !strings.HasSuffix(hostname, ".local") {
 			continue
 		}
-
-		hostname := normalizeHostname(rule.Host)
-
-		for _, ip := range ips {
-			svc, err := publishMDNS(hostname, ip)
-			if err != nil {
-				log.Printf(
-					"Failed to publish %s -> %s: %v",
-					hostname,
-					ip,
-					err,
-				)
-				continue
-			}
-
-			results = append(results, svc)
-		}
+		results[hostname] = unique(append(results[hostname], ips...))
 	}
 
 	return results
@@ -363,7 +398,7 @@ func extractIngressIPs(ingress *networkingv1.Ingress) []string {
 	return unique(results)
 }
 
-func processManualFile(path string) ([]PublishedService, error) {
+func processManualFile(path string) (map[string][]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -375,23 +410,15 @@ func processManualFile(path string) ([]PublishedService, error) {
 		return nil, err
 	}
 
-	results := make([]PublishedService, 0)
+	results := make(map[string][]string)
 
-	for _, entry := range entries {
-		hostname := normalizeHostname(entry.Hostname)
-
-		svc, err := publishMDNS(hostname, entry.IP)
-		if err != nil {
-			log.Printf(
-				"Failed to publish manual entry %s -> %s: %v",
-				hostname,
-				entry.IP,
-				err,
-			)
+	for _, e := range entries {
+		hostname := normalizeHostname(e.Hostname)
+		if hostname == ".local" || net.ParseIP(e.IP) == nil {
+			log.Printf("Skipping invalid manual entry %q -> %q", e.Hostname, e.IP)
 			continue
 		}
-
-		results = append(results, svc)
+		results[hostname] = unique(append(results[hostname], e.IP))
 	}
 
 	return results, nil
@@ -407,36 +434,21 @@ func normalizeHostname(host string) string {
 	return host
 }
 
-func publishMDNS(hostname string, ip string) (PublishedService, error) {
-
+func publishMDNS(hostname string, ips []string) (*zeroconf.Server, error) {
 	instance := strings.TrimSuffix(hostname, ".local")
 
 	info := []string{
-		fmt.Sprintf("ip=%s", ip),
+		fmt.Sprintf("ip=%s", strings.Join(ips, ",")),
 		fmt.Sprintf("hostname=%s", hostname),
-		fmt.Sprintf("published=%d", time.Now().Unix()),
 	}
 
-	server, err := zeroconf.RegisterProxy(
-		instance,
-		"_http._tcp",
-		"local.",
-		80,
-		hostname,
-		[]string{ip},
-		info,
-		nil,
-	)
+	server, err := zeroconf.RegisterProxy(instance, "_http._tcp", "local.", 80, hostname, ips, info, nil)
 	if err != nil {
-		return PublishedService{}, err
+		return nil, err
 	}
 
-	log.Printf("Published mDNS: %s -> %s", hostname, ip)
-
-	return PublishedService{
-		Server: server,
-		Name:   hostname,
-	}, nil
+	log.Printf("Published mDNS: %s -> %v", hostname, ips)
+	return server, nil
 }
 
 func unique(input []string) []string {

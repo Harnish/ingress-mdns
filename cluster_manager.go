@@ -21,6 +21,7 @@ type clusterManager struct {
 	dir          string
 	registry     *ServiceRegistry
 	pollInterval time.Duration
+	ingressIP    string // fallback IP for ingresses with no LB IP
 	running      map[string]context.CancelFunc
 	lastFailed   map[string]bool
 }
@@ -109,7 +110,7 @@ func (m *clusterManager) startCluster(ctx context.Context, path string) {
 
 			log.Printf("watching new cluster %s (%s)", label, path)
 			go func() {
-				watchIngresses(clusterCtx, clientset, m.registry, label)
+				watchIngresses(clusterCtx, clientset, m.registry, label, m.ingressIP)
 				m.registry.removeCluster(label)
 			}()
 			return
